@@ -10,6 +10,30 @@ app.post("/ai", async (req, res) => {
   try {
     const { cc, va, iop, history } = req.body;
 
+    // 🧠 BASIC CLINICAL LOGIC (fast + reliable)
+    let flags = [];
+    let suggestions = [];
+
+    const iopNum = parseInt(iop);
+
+    if (iopNum >= 30) {
+      flags.push("🔴 High IOP — possible glaucoma / angle closure risk");
+      suggestions.push("Check angles, consider urgent pressure lowering");
+    } else if (iopNum >= 22) {
+      flags.push("🟡 Elevated IOP — glaucoma suspect");
+      suggestions.push("OCT RNFL, HVF, pachymetry");
+    }
+
+    if (cc?.toLowerCase().includes("floaters") || cc?.toLowerCase().includes("flashes")) {
+      flags.push("🟡 Possible retinal tear / detachment");
+      suggestions.push("Dilated fundus exam ASAP");
+    }
+
+    if (cc?.toLowerCase().includes("blur")) {
+      suggestions.push("Refraction + macular OCT");
+    }
+
+    // 🧠 AI reasoning layer
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -21,7 +45,20 @@ app.post("/ai", async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are a highly trained ophthalmology assistant helping guide exams, interpret findings, and suggest next steps."
+            content: `
+You are an expert ophthalmology assistant.
+
+Think like a clinician.
+
+Always provide:
+1. Likely diagnoses (ranked)
+2. Key supporting findings
+3. Next diagnostic steps
+4. Treatment considerations
+5. Urgency level (Routine / Urgent / Emergent)
+
+Be concise and clinical.
+`
           },
           {
             role: "user",
@@ -32,12 +69,7 @@ IOP: ${iop}
 
 History:
 ${history || "None"}
-
-Provide:
-- Likely diagnosis
-- Next steps
-- Recommended testing
-            `
+`
           }
         ]
       })
@@ -46,7 +78,11 @@ Provide:
     const data = await response.json();
 
     res.json({
-      result: data.choices?.[0]?.message?.content || "No response"
+      result:
+        "⚠️ FLAGS:\n" + (flags.join("\n") || "None") +
+        "\n\n🧠 CLINICAL SUGGESTIONS:\n" + (suggestions.join("\n") || "None") +
+        "\n\n📋 AI ANALYSIS:\n" +
+        (data.choices?.[0]?.message?.content || "No response")
     });
 
   } catch (err) {
@@ -55,7 +91,7 @@ Provide:
   }
 });
 
-app.get("/", (req,res)=>{
+app.get("/", (req, res) => {
   res.send("Ophthalmology AI Running");
 });
 
