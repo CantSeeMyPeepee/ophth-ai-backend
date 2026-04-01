@@ -2,85 +2,99 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
 app.post("/ai", async (req, res) => {
   try {
-    const { cc = "", va = "", iop = "", history = "" } = req.body;
+    const {
+      cc = "",
+      va_od = "",
+      va_os = "",
+      iop_od = "",
+      iop_os = "",
+      history = ""
+    } = req.body;
 
     const ccText = cc.toLowerCase();
-    const iopNum = parseInt(iop);
 
-    // 🧠 SCORING SYSTEM
-    let scores = {
-      glaucoma: 0,
-      retinal: 0,
-      macular: 0,
-      inflammatory: 0
-    };
+    const od = { glaucoma: 0, retinal: 0, macular: 0 };
+    const os = { glaucoma: 0, retinal: 0, macular: 0 };
 
     let flags = [];
     let suggestions = [];
 
-    // 🔴 GLAUCOMA
-    if (iopNum >= 30) {
-      scores.glaucoma += 70;
-      flags.push("🔴 Very high IOP");
-    } else if (iopNum >= 22) {
-      scores.glaucoma += 40;
+    const iopOD = parseInt(iop_od);
+    const iopOS = parseInt(iop_os);
+
+    // 🔴 GLAUCOMA LOGIC
+    if (iopOD >= 30) {
+      od.glaucoma += 70;
+      flags.push("🔴 OD high IOP");
+    } else if (iopOD >= 22) {
+      od.glaucoma += 40;
     }
 
-    if (history.toLowerCase().includes("glaucoma")) {
-      scores.glaucoma += 20;
+    if (iopOS >= 30) {
+      os.glaucoma += 70;
+      flags.push("🔴 OS high IOP");
+    } else if (iopOS >= 22) {
+      os.glaucoma += 40;
     }
 
-    // 🟡 RETINAL DETACHMENT / TEAR
+    // 🟡 RETINAL
     if (ccText.includes("floaters") || ccText.includes("flashes")) {
-      scores.retinal += 60;
-      flags.push("🟡 Flashes/floaters");
+      od.retinal += 50;
+      os.retinal += 50;
+      flags.push("🟡 Floaters/flashes");
     }
 
     if (ccText.includes("curtain")) {
-      scores.retinal += 80;
+      od.retinal += 80;
+      os.retinal += 80;
       flags.push("🔴 Curtain vision loss");
     }
 
-    // 🟡 MACULAR (AMD / DME / CSCR)
+    // 🟡 MACULAR
     if (ccText.includes("blur") || ccText.includes("distortion")) {
-      scores.macular += 40;
+      od.macular += 40;
+      os.macular += 40;
     }
 
     if (history.toLowerCase().includes("diabetes")) {
-      scores.macular += 25;
+      od.macular += 25;
+      os.macular += 25;
     }
 
-    // 🟡 INFLAMMATORY
-    if (ccText.includes("pain") || ccText.includes("light sensitivity")) {
-      scores.inflammatory += 50;
+    // 🧠 BILATERAL LOGIC
+    let bilateral = "";
+
+    if (Math.abs(iopOD - iopOS) <= 2 && iopOD > 22 && iopOS > 22) {
+      bilateral = "🧠 Symmetric elevated IOP → likely glaucoma pattern";
     }
 
-    // 🔧 NORMALIZE TO 100 MAX
-    Object.keys(scores).forEach(k => {
-      if (scores[k] > 100) scores[k] = 100;
+    if (Math.abs(iopOD - iopOS) >= 8) {
+      bilateral = "⚠️ Significant asymmetry → investigate secondary causes";
+    }
+
+    // 🔧 LIMIT TO 100
+    [od, os].forEach(eye => {
+      Object.keys(eye).forEach(k => {
+        if (eye[k] > 100) eye[k] = 100;
+      });
     });
 
-    // 🧠 AUTO SUGGESTIONS
-    if (scores.glaucoma > 40) {
+    // 🧠 SUGGESTIONS
+    if (od.glaucoma > 40 || os.glaucoma > 40) {
       suggestions.push("OCT RNFL, HVF, pachymetry");
     }
 
-    if (scores.retinal > 50) {
+    if (od.retinal > 50 || os.retinal > 50) {
       suggestions.push("Dilated fundus exam ASAP");
     }
 
-    if (scores.macular > 40) {
+    if (od.macular > 40 || os.macular > 40) {
       suggestions.push("Macular OCT");
-    }
-
-    if (scores.inflammatory > 40) {
-      suggestions.push("Slit lamp exam, AC check");
     }
 
     // 🤖 AI REASONING
@@ -98,11 +112,13 @@ app.post("/ai", async (req, res) => {
             content: `
 You are an expert ophthalmology assistant.
 
+Interpret OD and OS separately when appropriate.
+
 Provide:
-- Top 3 likely diagnoses
-- Key findings supporting each
+- Likely diagnoses
+- Key findings
 - Next steps
-- Urgency level
+- Urgency
 
 Be concise and clinical.
 `
@@ -111,8 +127,12 @@ Be concise and clinical.
             role: "user",
             content: `
 CC: ${cc}
-VA: ${va}
-IOP: ${iop}
+
+OD:
+VA ${va_od}, IOP ${iop_od}
+
+OS:
+VA ${va_os}, IOP ${iop_os}
 
 History:
 ${history}
@@ -126,11 +146,18 @@ ${history}
 
     res.json({
       result:
-`📊 DISEASE PROBABILITY:
-Glaucoma: ${scores.glaucoma}%
-Retinal (RD/Tear): ${scores.retinal}%
-Macular (AMD/DME): ${scores.macular}%
-Inflammatory: ${scores.inflammatory}%
+`📊 OD SCORES:
+Glaucoma: ${od.glaucoma}%
+Retinal: ${od.retinal}%
+Macular: ${od.macular}%
+
+📊 OS SCORES:
+Glaucoma: ${os.glaucoma}%
+Retinal: ${os.retinal}%
+Macular: ${os.macular}%
+
+🧠 BILATERAL:
+${bilateral || "No major pattern"}
 
 ⚠️ FLAGS:
 ${flags.join("\n") || "None"}
