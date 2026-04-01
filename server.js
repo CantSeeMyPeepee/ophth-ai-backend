@@ -8,32 +8,82 @@ app.use(express.json());
 
 app.post("/ai", async (req, res) => {
   try {
-    const { cc, va, iop, history } = req.body;
+    const { cc = "", va = "", iop = "", history = "" } = req.body;
 
-    // 🧠 BASIC CLINICAL LOGIC (fast + reliable)
+    const ccText = cc.toLowerCase();
+    const iopNum = parseInt(iop);
+
+    // 🧠 SCORING SYSTEM
+    let scores = {
+      glaucoma: 0,
+      retinal: 0,
+      macular: 0,
+      inflammatory: 0
+    };
+
     let flags = [];
     let suggestions = [];
 
-    const iopNum = parseInt(iop);
-
+    // 🔴 GLAUCOMA
     if (iopNum >= 30) {
-      flags.push("🔴 High IOP — possible glaucoma / angle closure risk");
-      suggestions.push("Check angles, consider urgent pressure lowering");
+      scores.glaucoma += 70;
+      flags.push("🔴 Very high IOP");
     } else if (iopNum >= 22) {
-      flags.push("🟡 Elevated IOP — glaucoma suspect");
+      scores.glaucoma += 40;
+    }
+
+    if (history.toLowerCase().includes("glaucoma")) {
+      scores.glaucoma += 20;
+    }
+
+    // 🟡 RETINAL DETACHMENT / TEAR
+    if (ccText.includes("floaters") || ccText.includes("flashes")) {
+      scores.retinal += 60;
+      flags.push("🟡 Flashes/floaters");
+    }
+
+    if (ccText.includes("curtain")) {
+      scores.retinal += 80;
+      flags.push("🔴 Curtain vision loss");
+    }
+
+    // 🟡 MACULAR (AMD / DME / CSCR)
+    if (ccText.includes("blur") || ccText.includes("distortion")) {
+      scores.macular += 40;
+    }
+
+    if (history.toLowerCase().includes("diabetes")) {
+      scores.macular += 25;
+    }
+
+    // 🟡 INFLAMMATORY
+    if (ccText.includes("pain") || ccText.includes("light sensitivity")) {
+      scores.inflammatory += 50;
+    }
+
+    // 🔧 NORMALIZE TO 100 MAX
+    Object.keys(scores).forEach(k => {
+      if (scores[k] > 100) scores[k] = 100;
+    });
+
+    // 🧠 AUTO SUGGESTIONS
+    if (scores.glaucoma > 40) {
       suggestions.push("OCT RNFL, HVF, pachymetry");
     }
 
-    if (cc?.toLowerCase().includes("floaters") || cc?.toLowerCase().includes("flashes")) {
-      flags.push("🟡 Possible retinal tear / detachment");
+    if (scores.retinal > 50) {
       suggestions.push("Dilated fundus exam ASAP");
     }
 
-    if (cc?.toLowerCase().includes("blur")) {
-      suggestions.push("Refraction + macular OCT");
+    if (scores.macular > 40) {
+      suggestions.push("Macular OCT");
     }
 
-    // 🧠 AI reasoning layer
+    if (scores.inflammatory > 40) {
+      suggestions.push("Slit lamp exam, AC check");
+    }
+
+    // 🤖 AI REASONING
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -48,14 +98,11 @@ app.post("/ai", async (req, res) => {
             content: `
 You are an expert ophthalmology assistant.
 
-Think like a clinician.
-
-Always provide:
-1. Likely diagnoses (ranked)
-2. Key supporting findings
-3. Next diagnostic steps
-4. Treatment considerations
-5. Urgency level (Routine / Urgent / Emergent)
+Provide:
+- Top 3 likely diagnoses
+- Key findings supporting each
+- Next steps
+- Urgency level
 
 Be concise and clinical.
 `
@@ -63,12 +110,12 @@ Be concise and clinical.
           {
             role: "user",
             content: `
-Chief Complaint: ${cc}
-Visual Acuity: ${va}
+CC: ${cc}
+VA: ${va}
 IOP: ${iop}
 
 History:
-${history || "None"}
+${history}
 `
           }
         ]
@@ -79,10 +126,20 @@ ${history || "None"}
 
     res.json({
       result:
-        "⚠️ FLAGS:\n" + (flags.join("\n") || "None") +
-        "\n\n🧠 CLINICAL SUGGESTIONS:\n" + (suggestions.join("\n") || "None") +
-        "\n\n📋 AI ANALYSIS:\n" +
-        (data.choices?.[0]?.message?.content || "No response")
+`📊 DISEASE PROBABILITY:
+Glaucoma: ${scores.glaucoma}%
+Retinal (RD/Tear): ${scores.retinal}%
+Macular (AMD/DME): ${scores.macular}%
+Inflammatory: ${scores.inflammatory}%
+
+⚠️ FLAGS:
+${flags.join("\n") || "None"}
+
+🧠 SUGGESTED TESTING:
+${suggestions.join("\n") || "None"}
+
+📋 AI ANALYSIS:
+${data.choices?.[0]?.message?.content || "No response"}`
     });
 
   } catch (err) {
